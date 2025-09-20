@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Dict, Any, Optional
 
 from whl_hub.meta import ModelMeta
-from whl_hub.utils import download_from_url, unzip_file, user_confirmation
+from whl_hub.utils import resolve_asset_path, unzip_file, user_confirmation
 
 
 class AssetConfig:
@@ -38,12 +38,42 @@ class AssetConfig:
         file_name = f"{model_meta.name}_{framework_abbr}"
         return self.model_install_root / file_name
 
-    def find_meta_file(self, search_path: Path) -> Optional[Path]:
-        """Find the metadata file in the given directory."""
-        for ext in ['.yaml', '.yml']:
-            meta_file = search_path / f"{self.model_meta_filename}{ext}"
-            if meta_file.is_file():
-                return meta_file
+    def find_meta_file(self, search_dir: Path) -> Optional[Path]:
+        """
+        Recursively finds the model metadata file within a directory.
+
+        It handles cases where the zip archive extracts to a single root folder.
+        It searches for both .yaml and .yml extensions.
+
+        Args:
+            search_dir: The directory to search within (e.g., /tmp/whl_hub_model_extract).
+
+        Returns:
+            A Path object to the first found metadata file, or None if not found.
+        """
+        logging.info(f"Recursively searching for '{self.model_meta_filename}.(yaml|yml)' in '{search_dir}'...")
+
+        # Use rglob to search in the current directory and all subdirectories
+        # for a file with the base name and either .yaml or .yml extension.
+
+        # Search for .yaml first
+        found_files = list(search_dir.rglob(f'{self.model_meta_filename}.yaml'))
+        if found_files:
+            if len(found_files) > 1:
+                logging.warning(f"Multiple '{self.model_meta_filename}.yaml' files found. Using the first one: {found_files[0]}")
+            logging.info(f"Found metadata file: {found_files[0]}")
+            return found_files[0]
+
+        # If not found, search for .yml
+        found_files = list(search_dir.rglob(f'{self.model_meta_filename}.yml'))
+        if found_files:
+            if len(found_files) > 1:
+                logging.warning(f"Multiple '{self.model_meta_filename}.yml' files found. Using the first one: {found_files[0]}")
+            logging.info(f"Found metadata file: {found_files[0]}")
+            return found_files[0]
+
+        # If we reach here, neither was found.
+        logging.error(f"Metadata file '{self.model_meta_filename}.(yaml|yml)' not found anywhere inside '{search_dir}'.")
         return None
 
 
@@ -52,72 +82,82 @@ def install(path_or_name: str, skip_if_exists: bool) -> Optional[Dict[str, Any]]
     Core logic for installing a new model.
 
     Args:
-        path_or_name: A URL, local file path, or model name to download from CDN.
-        skip_if_exists: If True, skip installation if the model already exists.
+        path_or_name: A URL, local file path, or a model name to download from the CDN.
+        skip_if_exists: If True and the model already exists, skip the installation.
 
     Returns:
-        Returns metadata dict on success, None on failure.
+        On success, returns a metadata dictionary including the installation path. On failure, returns None.
     """
     config = AssetConfig()
+
+    # Manage the top-level existence of the temp directory outside the try block.
+    # This ensures the `finally` block can execute correctly even if `install` fails to start.
     if config.unzip_tmp_dir.exists():
+        logging.warning(f"Temporary directory {config.unzip_tmp_dir} already exists, clearing it.")
         shutil.rmtree(config.unzip_tmp_dir)
-    config.unzip_tmp_dir.mkdir(parents=True)
+    config.unzip_tmp_dir.mkdir(parents=True, exist_ok=True)
 
     try:
-        # --- Stage 1: Acquire and extract asset ---
-        is_url = path_or_name.startswith(('http://', 'https://'))
-        if not Path(path_or_name).is_file() and not is_url:
-            path_or_name = config.cdn_url_template.format(path_or_name)
-            logging.info(f"Interpreted as model name. Downloading from: {path_or_name}")
-
-        downloaded_path = download_from_url(
-            path_or_name) if is_url else Path(path_or_name)
-
-        if not downloaded_path or not downloaded_path.exists():
-            logging.error(f"Cannot access or download asset: {path_or_name}")
+        # --- Stage 1: Acquire Asset ---
+        # `_resolve_asset_path` encapsulates all decision logic for URL, CDN, or local files.
+        archive_path = resolve_asset_path(path_or_name, config)
+        if not archive_path:
+            logging.error("Asset acquisition failed, aborting installation.")
             return None
 
-        if not unzip_file(downloaded_path, config.unzip_tmp_dir):
+        # --- Stage 2: Extract Asset ---
+        # `unzip_file` now returns the path to the directory where it extracted the files.
+        extraction_path = unzip_file(archive_path, config.unzip_tmp_dir)
+        if not extraction_path:
+            logging.error("Asset extraction failed, aborting installation.")
             return None
 
-        meta_file = config.find_meta_file(config.unzip_tmp_dir)
+        # --- Stage 3: Parse Metadata ---
+        meta_file = config.find_meta_file(extraction_path)
         if not meta_file:
-            logging.error(
-                f"Metadata file '{config.model_meta_filename}.yaml/yml' not found in extracted archive!")
+            logging.error(f"Metadata file '{config.model_meta_filename}.yaml/yml' not found in the extracted archive!")
             return None
-        unzipped_model_path = meta_file.parent
 
-        # --- Stage 2: Parse metadata and check for conflicts ---
         model_meta = ModelMeta()
         if not model_meta.parse_from(meta_file):
+            # `parse_from` should log detailed errors internally.
+            logging.error("Failed to parse metadata, aborting installation.")
             return None
 
+        # The directory containing the metadata file is the actual model content we need to move.
+        unzipped_model_content_path = meta_file.parent
+
+        # --- Stage 4: Check for Conflicts and Get Confirmation ---
         install_path = config.get_install_path(model_meta)
 
         if install_path.exists():
             if skip_if_exists:
-                logging.warning(
-                    f"Skipping installation: Model '{model_meta.name}' already exists at {install_path}.")
+                logging.warning(f"Skipping installation: Model '{model_meta.name}' already exists at {install_path}.")
+                return None  # This is an explicit skip, not an error.
+
+            question = f"Model '{model_meta.name}' already exists at {install_path}. Overwrite? [y/n]: "
+            if not user_confirmation(question):
+                logging.warning("Installation was canceled by the user.")
                 return None
 
-            question = f"Model '{model_meta.name}' already exists. Overwrite? [y/n]: "
-            if not user_confirmation(question):
-                logging.warning("Installation cancelled by user.")
-                return None
+            logging.info(f"Removing existing model to overwrite: {install_path}")
             shutil.rmtree(install_path)
 
-        # --- Stage 3: Perform installation ---
-        shutil.move(str(unzipped_model_path), str(install_path))
+        # --- Stage 5: Perform Installation ---
+        logging.info(f"Installing '{unzipped_model_content_path}' to '{install_path}'...")
+        shutil.move(str(unzipped_model_content_path), str(install_path))
         print(f"✅ Successfully installed model '{model_meta.name}' to {install_path}.")
 
+        # --- Stage 6: Prepare Return Data ---
         metadata = model_meta.to_dict()
         metadata['install_path'] = str(install_path)
         return metadata
 
     finally:
+        # This block executes regardless of success or failure to ensure cleanup.
         if config.unzip_tmp_dir.exists():
             shutil.rmtree(config.unzip_tmp_dir)
-            logging.debug("Temporary directory cleaned up.")
+            logging.debug("Temporary directory has been successfully cleaned up.")
 
 
 def remove(asset_name: str, metadata: Dict[str, Any]) -> bool:

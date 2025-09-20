@@ -1,13 +1,26 @@
 import json
 import logging
+import os
 from pathlib import Path
 import yaml
+import datetime
 
 from . import model_operations
 from . import map_operations
 
+apollo_root_dir = os.getenv('APOLLO_ROOT_DIR', '/apollo')
+REGISTRY_PATH = Path(apollo_root_dir) / ".whl-hub" / "registry.json"
 
-REGISTRY_PATH = Path.home() / ".whl-hub" / "registry.json"
+
+class CustomJSONEncoder(json.JSONEncoder):
+    """
+    A custom JSON encoder that serializes datetime.date and datetime.datetime objects
+    into ISO 8601 formatted strings.
+    """
+    def default(self, obj):
+        if isinstance(obj, (datetime.date, datetime.datetime)):
+            return obj.isoformat()
+        return super().default(obj)
 
 class AssetManager:
     """
@@ -31,7 +44,8 @@ class AssetManager:
         """Atomically write the current registry state to file."""
         try:
             with open(REGISTRY_PATH, 'w') as f:
-                json.dump(self.registry, f, indent=2, sort_keys=True)
+                # 3. Use our custom encoder when calling json.dump
+                json.dump(self.registry, f, indent=2, sort_keys=True, cls=CustomJSONEncoder)
         except IOError as e:
             logging.error(f"Failed to save registry: {e}")
 
@@ -45,18 +59,21 @@ class AssetManager:
             print("No assets (models or maps) are installed.")
             return
 
-        print("--- Models ---")
         models = {k: v for k, v in self.registry.items() if v.get('type') == 'model'}
+        maps = {k: v for k, v in self.registry.items() if v.get('type') == 'map'}
+
+        print("--- Models ---")
         if models:
+            # Adjusted fields to match your metadata
             print(f"{'Name':<25} {'Version':<15} {'Framework':<15} {'Sensor':<20}")
             print("-" * 75)
             for name, meta in models.items():
-                print(f"{name:<25} {meta.get('version', 'N/A'):<15} {meta.get('framework', 'N/A'):<15} {meta.get('sensor_type', 'N/A'):<20}")
+                sensor_type = meta.get('sensor_type', meta.get('sensor', 'N/A')) # Compatible with sensor or sensor_type
+                print(f"{name:<25} {meta.get('version', 'N/A'):<15} {meta.get('framework', 'N/A'):<15} {sensor_type:<20}")
         else:
             print("  No models installed.")
 
         print("\n--- Maps ---")
-        maps = {k: v for k, v in self.registry.items() if v.get('type') == 'map'}
         if maps:
             print(f"{'Name':<25} {'Version':<15} {'Region':<20} {'Format':<15}")
             print("-" * 75)
@@ -72,9 +89,10 @@ class AssetManager:
             logging.error(f"Asset '{asset_name}' not found.")
             return
 
-        asset_type = metadata.get('type')
+        asset_type = metadata.get('type', 'Unknown')
         print(f"--- Details for {asset_type.capitalize()}: {asset_name} ---")
-        print(yaml.safe_dump(metadata, sort_keys=False, allow_unicode=True))
+        serializable_meta = json.loads(json.dumps(metadata, cls=CustomJSONEncoder))
+        print(yaml.safe_dump(serializable_meta, sort_keys=False, allow_unicode=True))
 
 
     def install(self, path, asset_type, skip):
