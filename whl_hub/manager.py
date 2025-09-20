@@ -78,12 +78,12 @@ class AssetManager:
 
 
     def install(self, path, asset_type, skip):
-        """Call the corresponding install function based on asset type and update the registry."""
+        """Call the corresponding install function and update the registry."""
+        metadata = None
         if asset_type == 'model':
-            # Pass the registry so the operation module can check for conflicts
-            metadata = model_operations.install(path, skip, self.registry)
+            metadata = model_operations.install(path, skip)
         elif asset_type == 'map':
-            metadata = map_operations.install(path, skip, self.registry)
+            metadata = map_operations.install(path, skip)
         else:
             logging.error(f"Internal error: Unknown asset type '{asset_type}'.")
             return
@@ -95,6 +95,7 @@ class AssetManager:
             logging.info(f"Registry updated for asset: '{asset_name}'.")
         else:
             logging.error("Installation failed or did not return valid metadata. Registry not updated.")
+
 
     def remove(self, asset_name):
         """Call the corresponding remove function based on asset type and update the registry."""
