@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=42"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "whl-hub"
+version = "0.0.1"
+description = "wheelos map tool"
+readme = "README.md"
+authors = [
+  { name = "daohu527", email = "daohu527@gmail.com" }
+]
+urls = { Homepage = "https://github.com/wheelos-tools/whl-hub", bug_tracker = "https://github.com/wheelos-tools/whl-hub/issues" }
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Operating System :: OS Independent",
+  "Intended Audience :: Developers",
+  "Topic :: Scientific/Engineering :: GIS",
+  "Programming Language :: Python :: 3 :: Only"
+]
+requires-python = ">=3.6"
+
+keywords = ["hub", "wheelos"]
+
+[project.scripts]
+whl-hub = "whl_hub.main:main"
+
+[tool.setuptools]
+package-dir = { "" = "." }
+
+[tool.setuptools.packages.find]
+where = ["."]
